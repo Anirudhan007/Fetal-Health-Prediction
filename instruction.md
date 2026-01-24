@@ -18,15 +18,16 @@ You are the **Perinatologist / Maternal–Fetal Medicine (MFM) Specialist** work
 
 1. Combine all data in both input files on the basis of `patient_id`.
 2. Remove all rows where `health_insurance == 0` or `health_insurance == False`.
+3. Name the combined and processed dataset as `final_df`.
 
 ## Feature Selection and NA Handling
 
-1. Use all the features in the final integrated table.
-2. Drop any row containing NA in features or target (`fetal_health`).
+1. Use all the features in the final integrated table (`final_df`).
+2. Drop any row containing NA in features or target (`fetal_health`) in `final_df`.
 
 ## Model Setup
 
-1. Split the dataset into training and testing partitions using a `train_test_split` (80/20) with a random seed of 42 to ensure reproducibility.
+1. Split the dataset into training and testing partitions using a `train_test_split` (70/30) with a random seed of 42 to ensure reproducibility.
 2. Fit a Random Forest classification model.
 3. Evaluate the model using F1 and AUC on the testing set.
 
