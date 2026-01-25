@@ -26,38 +26,37 @@ NOTEBOOK_VARS_PATH = VERIFIER_DIR / "notebook_variables.json"
 # ==============================================================================
 
 EXPECTED_MODEL_QUALITY = {
-    "auc": 0.98651,
-    "f1": 0.94304,
+    "auc": 0.98783,
+    "f1":  0.8941,
 }
 
 EXPECTED_FEATURE_IMPORTANCE = {
-    "MajorDecelBurden": 0.03872,
-    "ReassuranceRatio": 0.04295,
-    "TotalDecelerations": 0.01042,
-    "VariabilityAbnormalityIndex": 0.09697,
-    "abnormal_short_term_variability": 0.10628,
-    "accelerations": 0.04361,
-    "baseline value": 0.02686,
-    "fetal_movement": 0.01229,
-    "health_insurance": 0.0,
-    "histogram_max": 0.02281,
-    "histogram_mean": 0.08627,
-    "histogram_median": 0.04909,
-    "histogram_min": 0.02245,
-    "histogram_mode": 0.04917,
-    "histogram_number_of_peaks": 0.01298,
-    "histogram_number_of_zeroes": 0.00265,
-    "histogram_tendency": 0.00446,
-    "histogram_variance": 0.02621,
-    "histogram_width": 0.02246,
-    "light_decelerations": 0.00776,
-    "mean_value_of_long_term_variability": 0.03618,
-    "mean_value_of_short_term_variability": 0.07528,
-    "patient_id": 0.08001,
-    "percentage_of_time_with_abnormal_long_term_variability": 0.07388,
-    "prolongued_decelerations": 0.03192,
-    "severe_decelerations": 0.00039,
-    "uterine_contractions": 0.01794,
+    'baseline value': 0.03411, 
+    'accelerations': 0.03331, 
+    'fetal_movement': 0.0155, 
+    'uterine_contractions': 0.0247, 
+    'light_decelerations': 0.00546, 
+    'severe_decelerations': 0.00029, 
+    'prolongued_decelerations': 0.0385, 
+    'abnormal_short_term_variability': 0.1031, 
+    'mean_value_of_short_term_variability': 0.0988, 
+    'percentage_of_time_with_abnormal_long_term_variability': 0.09199, 
+    'mean_value_of_long_term_variability': 0.04015, 
+    'MajorDecelBurden': 0.03871, 
+    'VariabilityAbnormalityIndex': 0.12912, 
+    'TotalDecelerations': 0.00874, 
+    'ReassuranceRatio': 0.03089, 
+    'histogram_width': 0.02905, 
+    'histogram_min': 0.02733, 
+    'histogram_max': 0.02505, 
+    'histogram_number_of_peaks': 0.0184, 
+    'histogram_number_of_zeroes': 0.00562, 
+    'histogram_mode': 0.04659, 
+    'histogram_mean': 0.07398, 
+    'histogram_median': 0.04725, 
+    'histogram_variance': 0.02622, 
+    'histogram_tendency': 0.00713, 
+    'health_insurance': 0.0
 }
 
 REQUIRED_MODEL_QUALITY_KEYS = ["f1", "auc"]
@@ -238,19 +237,34 @@ def test_feature_importance_sum_close_to_one(notebook_variables: dict) -> None:
         f"Sum of feature importances should be close to 1.0 (±0.05), got {total}"
     )
 
-
-def test_health_insurance_importance_near_zero(notebook_variables: dict) -> None:
+def test_final_df_exists_and_patient_id_dropped(notebook_variables: dict) -> None:
     """
-    health_insurance should be filtered to True/1 only, so it should have ~0 importance.
+    Test that final_df exists and patient_id has been dropped after merging,
+    as required by instruction.md (ID leakage prevention).
     """
-    feature_importance_dict = notebook_variables.get("feature_importance_dict", {})
-    hi = feature_importance_dict.get("health_insurance")
-
-    assert hi is not None, "health_insurance key not found in feature_importance_dict"
-    assert abs(hi - 0.0) <= 0.01, (
-        f"Expected health_insurance importance to be ~0.0 (±0.01), got {hi}"
+    assert "final_df" in notebook_variables, (
+        "final_df must exist in the notebook environment after dataset integration."
     )
 
+    final_df_obj = notebook_variables["final_df"]
+
+    # final_df might be saved as a dict (split) or as a normal dict-like structure
+    # reconstruct it safely into a DataFrame
+    final_df = reconstruct_dataframe_from_dict(final_df_obj)
+
+    assert isinstance(final_df, pd.DataFrame), "final_df must be reconstructable as a pandas DataFrame"
+    assert "patient_id" not in final_df.columns, (
+        "patient_id must be dropped from final_df before training (identifier leakage)."
+    )
+
+def test_health_insurance_all_true_in_final_df(notebook_variables: dict) -> None:
+    assert "final_df" in notebook_variables, "final_df must exist"
+
+    final_df = reconstruct_dataframe_from_dict(notebook_variables["final_df"])
+    assert "health_insurance" in final_df.columns, "health_insurance must exist in final_df"
+
+    vals = set(final_df["health_insurance"].astype(str).str.lower().unique())
+    assert vals.issubset({"1", "true"}), f"Expected only insured rows, got values: {vals}"
 
 # ==============================================================================
 # fetal_status VALIDATION

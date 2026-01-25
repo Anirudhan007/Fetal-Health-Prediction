@@ -18,7 +18,8 @@ You are the **Perinatologist / Maternal–Fetal Medicine (MFM) Specialist** work
 
 1. Combine all data in both input files on the basis of `patient_id`.
 2. Remove all rows where `health_insurance == 0` or `health_insurance == False`.
-3. Name the combined and processed dataset as `final_df`.
+3. Drop `patient_id` after merging, as it is an identifier and should not be used as a model feature.
+4. Save the combined and processed dataset as **final_df**.
 
 ## Feature Selection and NA Handling
 
@@ -29,7 +30,7 @@ You are the **Perinatologist / Maternal–Fetal Medicine (MFM) Specialist** work
 
 1. Split the dataset into training and testing partitions using a `train_test_split` (70/30) with a random seed of 42 to ensure reproducibility.
 2. Fit a Random Forest classification model.
-3. Evaluate the model using F1 and AUC on the testing set.
+3. Evaluate the model using **F1 (macro)** and **AUC** on the testing set.
 
 ## Deliverables
 
