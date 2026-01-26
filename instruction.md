@@ -7,7 +7,7 @@ You are the **Perinatologist / Maternal–Fetal Medicine (MFM) Specialist** work
 
 ## Data Preparation
 
-1. In the `medical_data_file`, create a new feature called `MajorDecelBurden = severe_decelerations + prolonged_decelerations`.
+1. In the `medical_data_file`, create a new feature called `MajorDecelBurden = severe_decelerations + prolongued_decelerations`.
 2. In the `medical_data_file`, create another new feature called `VariabilityAbnormalityIndex = (abnormal_short_term_variability + percentage_of_time_with_abnormal_long_term_variability)`.
 3. In the `medical_data_file`, create reassurance-related features:
    - Compute `TotalDecelerations = (light_decelerations + severe_decelerations + prolongued_decelerations)`.

@@ -58,7 +58,7 @@ EXPECTED_FEATURE_IMPORTANCE = {
     'histogram_tendency': 0.00713, 
     'health_insurance': 0.0
 }
-
+  
 REQUIRED_MODEL_QUALITY_KEYS = ["f1", "auc"]
 
 # NOTE: We expect ALL keys in EXPECTED_FEATURE_IMPORTANCE
