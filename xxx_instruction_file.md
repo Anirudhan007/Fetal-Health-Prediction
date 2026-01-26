@@ -27,6 +27,10 @@ Complete the class `FetalHealthPredictor` in the provided initial notebook. You 
    - Returns predicted probabilities for the given dataframe (without the `fetal_health` column)  
    - Must return a 2D numpy array of shape `(n_samples, 3)` with valid probabilities that sum to 1 across classes  
 
+**Robustness Requirements**:
+- Your model must work even if the input feature columns are provided in a different order (shuffled columns).
+- Your model must work even if one feature column is missing at inference time (handle missing columns gracefully).
+
 **Important Note (Do NOT print training metrics)**:
 - Do NOT print training accuracy / training macro-F1 / training recall during `fit()`
 - The evaluator will compute metrics independently on the hidden test dataset
