@@ -54,3 +54,4 @@ y_pred = predictor.predict(df_test.drop('fetal_health', axis=1))
 accuracy = metrics.accuracy_score(y_true, y_pred)
 macro_f1 = metrics.f1_score(y_true, y_pred, average="macro")
 recall_class3 = metrics.recall_score(y_true, y_pred, labels=[1.0,2.0,3.0], average=None)[2]
+   
