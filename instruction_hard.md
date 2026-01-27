@@ -25,7 +25,7 @@ Your model must satisfy ALL of the following:
 
 **Note**: The model is evaluated using accuracy, macro F1 score, and class-wise recall calculated independently by the test suite using `predict()` output and true labels from the test dataset.
 
-Once the model is complete, write the entire class 'FetalHealthPredictor' along with necessary imports and helper functions into the file `/workspace/results/utils.py`.
+Once the model is complete, write the entire class 'FetalHealthPredictor' along with necessary imports and helper functions into 
 
 **Testing**: The model will be loaded and tested as follows:
 
