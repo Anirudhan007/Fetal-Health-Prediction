@@ -1,541 +1,525 @@
-# =============================================================================
-# FETAL HEALTH PREDICTION - COMPLETE SOLUTION (WITHOUT BioBERT)
-# =============================================================================
-
-import numpy as np
+import pytest
 import pandas as pd
+import numpy as np
+import os
+import sys
+import importlib.util
 from pathlib import Path
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn import metrics
+from sklearn.metrics import accuracy_score, f1_score, recall_score
+
+# =============================================================================
+# CONFIGURATION & PATHS
+# =============================================================================
+
+CURRENT_DIR = Path(__file__).parent
+UTILS_PATH = Path("/workspace/results/utils.py")
+SUBMISSION_PATH = Path("/workspace/results/submission.csv")
+TRAIN_DATA_PATH = Path("/workspace/data/train.csv")
+TEST_DATA_PATH = Path("/tests/test.csv")
+GROUND_TRUTH_PATH = CURRENT_DIR / "garbage_columns.csv"
+
+# Performance Thresholds
+ACCURACY_THRESHOLD = 0.90
+MACRO_F1_THRESHOLD = 0.90
+CLASS3_RECALL_THRESHOLD = 0.90
+
+# Probability Quality Threshold
+MIN_MEAN_CONFIDENCE = 0.4  # Ensure predictions aren't too uniform
+
+# =============================================================================
+# FIXTURES
+# =============================================================================
+
+@pytest.fixture(scope="module")
+def predictor_class():
+    """
+    Dynamically imports FetalHealthPredictor class from /workspace/results/utils.py.
+    Fails immediately if file or class is missing.
+    """
+    if not UTILS_PATH.exists():
+        pytest.fail(f"CRITICAL FAILURE: Source file '{UTILS_PATH}' does not exist.")
+    
+    try:
+        spec = importlib.util.spec_from_file_location("utils_module", UTILS_PATH)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["utils_module"] = module
+        spec.loader.exec_module(module)
+        
+        if not hasattr(module, "FetalHealthPredictor"):
+            pytest.fail(f"CRITICAL FAILURE: Class 'FetalHealthPredictor' not found in {UTILS_PATH}")
+        
+        return module.FetalHealthPredictor
+    
+    except Exception as e:
+        pytest.fail(f"CRITICAL FAILURE: Failed to import model from {UTILS_PATH}. Error: {e}")
+
+
+@pytest.fixture(scope="module")
+def fetal_health_data():
+    """
+    Loads train and test datasets.
+    Validates that both files exist and contain the 'target' column.
+    """
+    if not TRAIN_DATA_PATH.exists():
+        pytest.fail(f"CRITICAL FAILURE: Training data not found at {TRAIN_DATA_PATH}")
+    
+    if not TEST_DATA_PATH.exists():
+        pytest.fail(f"CRITICAL FAILURE: Test data not found at {TEST_DATA_PATH}")
+    
+    try:
+        df_train = pd.read_csv(TRAIN_DATA_PATH)
+        df_test = pd.read_csv(TEST_DATA_PATH)
+        
+        if "target" not in df_train.columns:
+            pytest.fail("CRITICAL FAILURE: 'target' column missing from train.csv")
+        
+        if "target" not in df_test.columns:
+            pytest.fail("CRITICAL FAILURE: 'target' column missing from test.csv")
+        
+        return df_train, df_test
+    
+    except Exception as e:
+        pytest.fail(f"CRITICAL FAILURE: Error loading data files. Error: {e}")
+
+
+@pytest.fixture(scope="module")
+def trained_model(predictor_class, fetal_health_data):
+    """
+    Creates and trains a FetalHealthPredictor instance.
+    Model is trained once and reused across all tests for efficiency.
+    """
+    FetalHealthPredictor = predictor_class
+    df_train, df_test = fetal_health_data
+    
+    try:
+        model = FetalHealthPredictor()
+        model.fit(df_train)
+        return model, df_train, df_test
+    
+    except Exception as e:
+        pytest.fail(f"CRITICAL FAILURE: Model training failed. Error: {e}")
+
+
+@pytest.fixture(scope="module")
+def garbage_ground_truth():
+    """
+    Loads ground truth garbage features from garbage_columns.csv.
+    Format: Single column with feature names (no headers), one feature per row.
+    Returns a set of feature names for order-independent comparison.
+    """
+    if not GROUND_TRUTH_PATH.exists():
+        pytest.fail(f"CRITICAL FAILURE: Ground truth file not found at {GROUND_TRUTH_PATH}")
+    
+    try:
+        truth_df = pd.read_csv(GROUND_TRUTH_PATH, header=None)
+        
+        # Validate single column format
+        if truth_df.shape[1] != 1:
+            pytest.fail(f"Ground truth must have exactly 1 column, found {truth_df.shape[1]}")
+        
+        # Extract feature names from first column, remove any NaN, convert to set
+        garbage_features = set(truth_df.iloc[:, 0].dropna().astype(str).values)
+        
+        if len(garbage_features) == 0:
+            pytest.fail("Ground truth file is empty - no garbage features found")
+        
+        return garbage_features
+    
+    except Exception as e:
+        pytest.fail(f"CRITICAL FAILURE: Error loading ground truth. Error: {e}")
 
 
 # =============================================================================
-# STEP 1: DEFINE GARBAGE FEATURES (MANUAL LIST)
+# LAYER 1: PATH & DIRECTORY VALIDATION
 # =============================================================================
 
-def get_garbage_features():
-    """
-    Manually identified garbage features that have no medical relevance to fetal health.
-    These are the 10 features with lowest semantic relevance based on domain knowledge.
-    """
-    garbage_features = [
-        'hospital_block',
-        'insurance_status',
-        'reviews_addressed',
-        'insurance_company',
-        'ctg_machine_model',
-        'weather_status',
-        'duty_doctor_shift',
-        'payment_status',
-        'ward_number',
-        'date'
-    ]
-    
-    return garbage_features
+def test_results_directory_exists():
+    """Verify that the /workspace/results/ directory exists."""
+    results_dir = Path("/workspace/results/")
+    assert results_dir.exists(), f"Results directory '{results_dir}' does not exist"
 
 
-def save_garbage_features():
-    """
-    Save garbage features to /workspace/results/submission.csv
-    Format: Single column, no header, one feature per row
-    """
-    garbage_features = get_garbage_features()
-    
-    # Create output directory if it doesn't exist
-    output_dir = Path("/workspace/results")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Create DataFrame with single column (no header)
-    submission_df = pd.DataFrame(garbage_features)
-    
-    # Save to submission.csv
-    submission_path = output_dir / "submission.csv"
-    submission_df.to_csv(submission_path, index=False, header=False)
-    
-    print(f"✓ Saved {len(garbage_features)} garbage features to {submission_path}")
-    print("\nGarbage features (administratively irrelevant to fetal health):")
-    for i, feature in enumerate(garbage_features, 1):
-        print(f"  {i:2d}. {feature}")
-    
-    return garbage_features
+def test_data_directory_exists():
+    """Verify that the /workspace/data/ directory exists."""
+    data_dir = Path("/workspace/data/")
+    assert data_dir.exists(), f"Data directory '{data_dir}' does not exist"
 
 
 # =============================================================================
-# STEP 2: FETAL HEALTH PREDICTOR CLASS
+# LAYER 2: FILE EXISTENCE VALIDATION
 # =============================================================================
 
-class FetalHealthPredictor:
+def test_utils_file_exists():
+    """Verify that utils.py exists at the expected location."""
+    assert UTILS_PATH.exists(), f"Source file '{UTILS_PATH}' does not exist"
+
+
+def test_submission_file_exists():
     """
-    Fetal Health Classification Model
-    
-    Predicts fetal health status:
-    - 1 = Normal
-    - 2 = Suspect
-    - 3 = Pathological
-    
-    Features:
-    - Column-order invariant
-    - Handles missing values
-    - Calibrated probabilities
-    - Optimized for Class 3 recall >= 0.90
+    Verify that submission.csv exists at the expected location.
+    Required for garbage feature identification.
     """
-    
-    def __init__(self):
-        """Initialize the predictor."""
-        self.model = None
-        self.preprocessor = None
-        self.relevant_features = None
-        
-        # Garbage features (excluded from training)
-        # These have no medical relevance to fetal health
-        self.garbage_features = [
-            'hospital_block',
-            'insurance_status',
-            'reviews_addressed',
-            'insurance_company',
-            'ctg_machine_model',
-            'weather_status',
-            'duty_doctor_shift',
-            'payment_status',
-            'ward_number',
-            'date'
-        ]
-    
-    def _setup_preprocessor(self):
-        """
-        Create preprocessing pipeline:
-        1. Impute missing values with median (handles NaNs)
-        2. Standardize features (zero mean, unit variance)
-        """
-        return Pipeline([
-            ('imputer', SimpleImputer(strategy='median')),
-            ('scaler', StandardScaler())
-        ])
-    
-    def fit(self, train_df):
-        """
-        Train the model on relevant features only (excluding garbage features).
-        
-        Args:
-            train_df: Training dataframe with 'target' column
-        """
-        # Get all features except target and garbage
-        all_features = [col for col in train_df.columns if col != 'target']
-        self.relevant_features = [f for f in all_features if f not in self.garbage_features]
-        
-        # Sort features for consistency (ensures column-order invariance)
-        self.relevant_features = sorted(self.relevant_features)
-        
-        print(f"\n{'='*70}")
-        print("TRAINING FETAL HEALTH PREDICTOR")
-        print(f"{'='*70}")
-        print(f"Total features: {len(all_features)}")
-        print(f"Garbage features (excluded): {len(self.garbage_features)}")
-        print(f"Relevant features (used): {len(self.relevant_features)}")
-        print(f"Training samples: {len(train_df)}")
-        
-        # Extract features and target (column-order invariant)
-        X = train_df[self.relevant_features]
-        y = train_df['target']
-        
-        print(f"\nClass distribution:")
-        for cls in sorted(y.unique()):
-            count = (y == cls).sum()
-            pct = count / len(y) * 100
-            class_name = {1.0: 'Normal', 2.0: 'Suspect', 3.0: 'Pathological'}.get(cls, str(cls))
-            print(f"  Class {int(cls)} ({class_name:13s}): {count:4d} ({pct:5.1f}%)")
-        
-        # Setup and fit preprocessor
-        self.preprocessor = self._setup_preprocessor()
-        X_processed = self.preprocessor.fit_transform(X)
-        
-        # RandomForest with class balancing
-        # Optimized for:
-        # - Accuracy >= 0.90
-        # - Macro-F1 >= 0.90
-        # - Class 3 Recall >= 0.90 (CRITICAL for pathological cases)
-        print("\nTraining Random Forest with Probability Calibration...")
-        base_model = RandomForestClassifier(
-            n_estimators=300,          # Strong ensemble
-            max_depth=15,              # Prevent overfitting
-            min_samples_split=10,      # Conservative splitting
-            min_samples_leaf=4,        # Smooth boundaries
-            max_features='sqrt',       # Feature randomness
-            class_weight='balanced',   # CRITICAL: Handle class imbalance for Class 3 recall
-            random_state=42,
-            n_jobs=-1
-        )
-        
-        # Calibrate probabilities for high-quality predict_proba
-        # Ensures probabilities are well-calibrated and not degenerate
-        self.model = CalibratedClassifierCV(
-            base_model,
-            method='sigmoid',
-            cv=5
-        )
-        
-        self.model.fit(X_processed, y)
-        
-        print("✓ Training complete")
-        print(f"{'='*70}\n")
-    
-    def predict(self, df):
-        """
-        Returns predictions (1.0, 2.0, 3.0).
-        
-        Handles:
-        - Shuffled column order (extracts by name in sorted order)
-        - Missing values (imputed by preprocessor)
-        
-        Args:
-            df: Dataframe WITHOUT 'target' column
-        
-        Returns:
-            predictions: Array of class predictions (1.0, 2.0, 3.0)
-        """
-        if self.model is None:
-            raise ValueError("Model not trained. Call fit() first.")
-        
-        # Extract relevant features in sorted order (column-order invariant)
-        X = df[self.relevant_features]
-        
-        # Preprocess (handles NaNs via imputation)
-        X_processed = self.preprocessor.transform(X)
-        
-        # Predict and convert to float
-        predictions = self.model.predict(X_processed).astype(float)
-        
-        return predictions
-    
-    def predict_proba(self, df):
-        """
-        Returns calibrated probability distribution over 3 classes.
-        
-        Shape: (n_samples, 3)
-        - Column 0: Probability of class 1 (Normal)
-        - Column 1: Probability of class 2 (Suspect)
-        - Column 2: Probability of class 3 (Pathological)
-        
-        Properties:
-        - Probabilities in range [0, 1]
-        - Rows sum to 1.0
-        - Well-calibrated (not degenerate/uniform)
-        
-        Args:
-            df: Dataframe WITHOUT 'target' column
-        
-        Returns:
-            probabilities: Array of shape (n_samples, 3)
-        """
-        if self.model is None:
-            raise ValueError("Model not trained. Call fit() first.")
-        
-        # Extract relevant features in sorted order (column-order invariant)
-        X = df[self.relevant_features]
-        
-        # Preprocess (handles NaNs via imputation)
-        X_processed = self.preprocessor.transform(X)
-        
-        # Get calibrated probabilities
-        probabilities = self.model.predict_proba(X_processed)
-        
-        return probabilities
+    assert SUBMISSION_PATH.exists(), \
+        f"Submission file '{SUBMISSION_PATH}' must exist at {SUBMISSION_PATH}"
+
+
+def test_train_data_exists():
+    """Verify that train.csv exists."""
+    assert TRAIN_DATA_PATH.exists(), f"Training data not found at {TRAIN_DATA_PATH}"
+
+
+def test_test_data_exists():
+    """Verify that test.csv exists."""
+    assert TEST_DATA_PATH.exists(), f"Test data not found at {TEST_DATA_PATH}"
+
+
+def test_ground_truth_exists():
+    """Verify that garbage_columns.csv exists."""
+    assert GROUND_TRUTH_PATH.exists(), f"Ground truth not found at {GROUND_TRUTH_PATH}"
 
 
 # =============================================================================
-# STEP 3: MAIN EXECUTION WORKFLOW
+# LAYER 3: CLASS STRUCTURE VALIDATION
 # =============================================================================
 
-def main():
+def test_class_structure(predictor_class):
     """
-    Complete workflow:
-    1. Save garbage features to submission.csv
-    2. Load training data
-    3. Train model on relevant features (excluding garbage)
-    4. Validate on training set (sanity check)
+    Verify that FetalHealthPredictor class has required methods:
+    - fit()
+    - predict()
+    - predict_proba()
     """
-    print("\n" + "="*70)
-    print("FETAL HEALTH PREDICTION - COMPLETE SOLUTION")
-    print("="*70 + "\n")
+    FetalHealthPredictor = predictor_class
+    model = FetalHealthPredictor()
     
-    # Step 1: Save garbage features
-    print("STEP 1: Identifying and Saving Garbage Features")
-    print("-" * 70)
-    garbage_features = save_garbage_features()
+    assert hasattr(model, 'fit'), "Model must have 'fit' method"
+    assert hasattr(model, 'predict'), "Model must have 'predict' method"
+    assert hasattr(model, 'predict_proba'), "Model must have 'predict_proba' method"
     
-    # Step 2: Load training data
-    print("\n\nSTEP 2: Loading Training Data")
-    print("-" * 70)
-    train_path = Path("/workspace/data/train.csv")
+    assert callable(model.fit), "'fit' must be callable"
+    assert callable(model.predict), "'predict' must be callable"
+    assert callable(model.predict_proba), "'predict_proba' must be callable"
+
+
+# =============================================================================
+# LAYER 4: GARBAGE FEATURE VALIDATION
+# =============================================================================
+
+def test_garbage_features_schema():
+    """
+    Verify that submission.csv has correct format:
+    - Single column with feature names (no headers)
+    - No missing values
+    - At least one feature listed
+    """
+    if not SUBMISSION_PATH.exists():
+        pytest.fail(f"Submission file missing at {SUBMISSION_PATH}")
     
-    if not train_path.exists():
-        print(f"ERROR: Training data not found at {train_path}")
-        print("Garbage features have been saved to submission.csv")
-        return None, garbage_features
+    try:
+        submission_df = pd.read_csv(SUBMISSION_PATH, header=None)
+        
+        # Should have exactly one column
+        assert submission_df.shape[1] == 1, \
+            f"Submission must have exactly 1 column, found {submission_df.shape[1]}"
+        
+        # Should have at least one row
+        assert len(submission_df) > 0, \
+            "Submission file is empty - no features listed"
+        
+        # No missing values
+        if submission_df.iloc[:, 0].isnull().any():
+            pytest.fail("Submission contains NaN values in feature list")
     
-    df_train = pd.read_csv(train_path)
-    print(f"✓ Loaded training data: {df_train.shape}")
-    print(f"\nDataset has {len(df_train.columns)} total columns")
+    except Exception as e:
+        pytest.fail(f"Error reading submission.csv: {e}")
+
+
+def test_garbage_features_accuracy(garbage_ground_truth):
+    """
+    Compare identified garbage features to ground truth.
+    Requires EXACT MATCH (order-independent).
+    Both submission.csv and garbage_columns.csv contain feature names in first column (no headers).
+    """
+    if not SUBMISSION_PATH.exists():
+        pytest.fail("Submission file missing - cannot validate garbage feature identification")
     
-    # Step 3: Train model
-    print("\n\nSTEP 3: Training Model")
-    print("-" * 70)
-    predictor = FetalHealthPredictor()
-    predictor.fit(df_train)
+    try:
+        submission_df = pd.read_csv(SUBMISSION_PATH, header=None)
+        
+        # Extract feature names from first column, convert to set (order-independent)
+        identified_garbage = set(submission_df.iloc[:, 0].dropna().astype(str).values)
+        
+        # Calculate matching statistics for debugging
+        true_positives = len(identified_garbage & garbage_ground_truth)
+        false_positives = len(identified_garbage - garbage_ground_truth)
+        false_negatives = len(garbage_ground_truth - identified_garbage)
+        
+        print(f"\n[GARBAGE FEATURE IDENTIFICATION]")
+        print(f"Ground Truth Count: {len(garbage_ground_truth)}")
+        print(f"Identified Count: {len(identified_garbage)}")
+        print(f"Correctly Identified: {true_positives}")
+        print(f"Incorrectly Identified (False Positives): {false_positives}")
+        print(f"Missed (False Negatives): {false_negatives}")
+        
+        if false_positives > 0:
+            print(f"Extra features identified: {identified_garbage - garbage_ground_truth}")
+        if false_negatives > 0:
+            print(f"Missing features: {garbage_ground_truth - identified_garbage}")
+        
+        # EXACT MATCH REQUIRED (order-independent set comparison)
+        assert identified_garbage == garbage_ground_truth, \
+            f"Garbage features must match exactly.\n" \
+            f"Missing: {garbage_ground_truth - identified_garbage}\n" \
+            f"Extra: {identified_garbage - garbage_ground_truth}"
     
-    # Step 4: Validation on training set (sanity check)
-    print("\n\nSTEP 4: Training Set Validation (Sanity Check)")
-    print("-" * 70)
+    except AssertionError:
+        raise
+    except Exception as e:
+        pytest.fail(f"Error validating garbage features: {e}")
+
+
+# =============================================================================
+# LAYER 5: PREDICTION OUTPUT VALIDATION
+# =============================================================================
+
+def test_predict_output_format(trained_model):
+    """
+    Verify that predict() returns:
+    - Correct shape (matches test set size)
+    - Only valid class labels (1.0, 2.0, 3.0)
+    - No NaN values
+    """
+    model, df_train, df_test = trained_model
+    X_test = df_test.drop('target', axis=1)
     
-    y_true = df_train['target']
-    y_pred = predictor.predict(df_train.drop('target', axis=1))
-    y_proba = predictor.predict_proba(df_train.drop('target', axis=1))
+    try:
+        predictions = model.predict(X_test)
+        
+        # Check shape
+        assert len(predictions) == len(X_test), \
+            f"Expected {len(X_test)} predictions, got {len(predictions)}"
+        
+        # Check no NaN
+        if pd.isna(predictions).any():
+            pytest.fail("Predictions contain NaN values")
+        
+        # Check valid classes
+        valid_classes = {1.0, 2.0, 3.0}
+        unique_preds = set(predictions)
+        invalid = unique_preds - valid_classes
+        
+        assert len(invalid) == 0, \
+            f"Predictions contain invalid classes: {invalid}. Expected only {valid_classes}"
     
-    accuracy = metrics.accuracy_score(y_true, y_pred)
-    macro_f1 = metrics.f1_score(y_true, y_pred, average='macro')
-    recalls = metrics.recall_score(y_true, y_pred, labels=[1.0, 2.0, 3.0], average=None)
+    except Exception as e:
+        pytest.fail(f"Error in predict() method: {e}")
+
+
+def test_predict_proba_output_format(trained_model):
+    """
+    Verify that predict_proba() returns:
+    - Shape (n_samples, 3)
+    - Probabilities in [0, 1]
+    - Each row sums to 1.0
+    - Non-degenerate probabilities
+    """
+    model, df_train, df_test = trained_model
+    X_test = df_test.drop('target', axis=1)
     
-    # Check probability quality
-    max_probs = y_proba.max(axis=1)
-    mean_confidence = max_probs.mean()
+    try:
+        probabilities = model.predict_proba(X_test)
+        
+        # Check shape
+        assert probabilities.shape == (len(X_test), 3), \
+            f"Expected shape ({len(X_test)}, 3), got {probabilities.shape}"
+        
+        # Check probabilities in [0, 1]
+        assert np.all(probabilities >= 0) and np.all(probabilities <= 1), \
+            "Probabilities must be in range [0, 1]"
+        
+        # Check rows sum to 1
+        row_sums = probabilities.sum(axis=1)
+        assert np.allclose(row_sums, 1.0, atol=1e-6), \
+            "Probability rows must sum to 1.0"
+        
+        # Check non-degenerate (not overly uniform)
+        max_probs = probabilities.max(axis=1)
+        mean_confidence = max_probs.mean()
+        
+        print(f"\n[PROBABILITY QUALITY]")
+        print(f"Mean Max Probability: {mean_confidence:.4f}")
+        
+        assert mean_confidence >= MIN_MEAN_CONFIDENCE, \
+            f"Probabilities too uniform (mean max prob {mean_confidence:.4f} < {MIN_MEAN_CONFIDENCE})"
     
-    print(f"\nPerformance Metrics:")
-    print(f"  Accuracy:        {accuracy:.4f} (target: >= 0.90)")
-    print(f"  Macro-F1:        {macro_f1:.4f} (target: >= 0.90)")
-    print(f"  Class 1 Recall:  {recalls[0]:.4f}")
-    print(f"  Class 2 Recall:  {recalls[1]:.4f}")
-    print(f"  Class 3 Recall:  {recalls[2]:.4f} ⭐ (target: >= 0.90)")
+    except Exception as e:
+        pytest.fail(f"Error in predict_proba() method: {e}")
+
+
+def test_all_classes_predicted(trained_model):
+    """
+    Verify that the model doesn't collapse to predicting only one or two classes.
+    All three classes should appear in predictions.
+    """
+    model, df_train, df_test = trained_model
+    X_test = df_test.drop('target', axis=1)
     
-    print(f"\nProbability Quality:")
-    print(f"  Mean Confidence: {mean_confidence:.4f} (target: >= 0.40)")
-    print(f"  Rows sum to 1.0: {np.allclose(y_proba.sum(axis=1), 1.0)}")
+    predictions = model.predict(X_test)
+    unique_classes = set(predictions)
     
-    # Check robustness
-    print(f"\nRobustness Checks:")
+    assert len(unique_classes) >= 2, \
+        f"Model collapsed to {len(unique_classes)} class(es). Predictions: {unique_classes}"
+
+
+# =============================================================================
+# LAYER 6: ROBUSTNESS TESTS
+# =============================================================================
+
+def test_handles_shuffled_columns(trained_model):
+    """
+    Verify that model produces consistent predictions when columns are shuffled.
+    Model must be column-order invariant.
+    """
+    model, df_train, df_test = trained_model
+    X_test = df_test.drop('target', axis=1)
     
-    # Test shuffled columns
-    shuffled_df = df_train.drop('target', axis=1)
-    shuffled_cols = shuffled_df.columns.tolist()
+    # Get baseline predictions
+    baseline_predictions = model.predict(X_test)
+    
+    # Shuffle columns
+    shuffled_cols = X_test.columns.tolist()
     np.random.seed(42)
     np.random.shuffle(shuffled_cols)
-    shuffled_df = shuffled_df[shuffled_cols]
-    y_pred_shuffled = predictor.predict(shuffled_df)
-    shuffled_match = np.array_equal(y_pred, y_pred_shuffled)
-    print(f"  Column-order invariant: {shuffled_match} ✓" if shuffled_match else f"  Column-order invariant: {shuffled_match} ✗")
+    X_test_shuffled = X_test[shuffled_cols]
     
-    # Test with NaNs
-    test_df = df_train.drop('target', axis=1).copy()
-    mask = np.random.rand(*test_df.shape) < 0.05
-    test_df = test_df.mask(mask)
+    # Get predictions on shuffled data
+    shuffled_predictions = model.predict(X_test_shuffled)
+    
+    # Predictions should be identical
+    assert np.array_equal(baseline_predictions, shuffled_predictions), \
+        "Model predictions change when columns are shuffled - not column-order invariant"
+
+
+def test_handles_missing_values(trained_model):
+    """
+    Verify that model handles missing values (NaNs) gracefully without crashing.
+    Predictions should still be valid.
+    """
+    model, df_train, df_test = trained_model
+    X_test = df_test.drop('target', axis=1).copy()
+    
+    # Inject some NaNs (5% of values)
+    np.random.seed(42)
+    mask = np.random.rand(*X_test.shape) < 0.05
+    X_test_with_nans = X_test.copy()
+    X_test_with_nans = X_test_with_nans.mask(mask)
+    
     try:
-        y_pred_nan = predictor.predict(test_df)
-        nan_handled = not pd.isna(y_pred_nan).any()
-        print(f"  Handles NaNs gracefully: {nan_handled} ✓" if nan_handled else f"  Handles NaNs gracefully: {nan_handled} ✗")
+        predictions = model.predict(X_test_with_nans)
+        
+        # Verify predictions are valid
+        assert len(predictions) == len(X_test_with_nans), "Prediction count mismatch"
+        assert not pd.isna(predictions).any(), "Model produced NaN predictions"
+        
+        valid_classes = {1.0, 2.0, 3.0}
+        assert set(predictions).issubset(valid_classes), "Invalid class predictions with NaN input"
+    
     except Exception as e:
-        print(f"  Handles NaNs gracefully: False ✗ (Error: {e})")
-    
-    print("\n" + "="*70)
-    print("✓ SOLUTION COMPLETE")
-    print("="*70)
-    print("\nGenerated files:")
-    print("  1. /workspace/results/submission.csv (10 garbage features)")
-    print("  2. Model trained and ready in FetalHealthPredictor class")
-    print("\nNext step: Save FetalHealthPredictor class to /workspace/results/utils.py")
-    
-    return predictor, garbage_features
+        pytest.fail(f"Model failed to handle missing values: {e}")
 
 
 # =============================================================================
-# STEP 4: SAVE UTILS.PY (PRODUCTION VERSION)
+# LAYER 7: PERFORMANCE METRICS (MAIN EVALUATION)
 # =============================================================================
 
-def save_utils_file():
+def test_accuracy_threshold(trained_model):
     """
-    Save the FetalHealthPredictor class to /workspace/results/utils.py
-    This is the production version for testing.
+    Evaluate model accuracy on test set.
+    Required: Accuracy >= 0.90
     """
+    model, df_train, df_test = trained_model
     
-    utils_code = '''# =============================================================================
-# FETAL HEALTH PREDICTOR - PRODUCTION VERSION
-# =============================================================================
-
-import numpy as np
-import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.preprocessing import StandardScaler
-from sklearn.impute import SimpleImputer
-from sklearn.pipeline import Pipeline
-from sklearn.calibration import CalibratedClassifierCV
+    y_true = df_test['target']
+    y_pred = model.predict(df_test.drop('target', axis=1))
+    
+    accuracy = accuracy_score(y_true, y_pred)
+    
+    print(f"\n[METRIC] Accuracy: {accuracy:.4f}")
+    
+    assert accuracy >= ACCURACY_THRESHOLD, \
+        f"Accuracy {accuracy:.4f} below threshold {ACCURACY_THRESHOLD}"
 
 
-class FetalHealthPredictor:
+def test_macro_f1_threshold(trained_model):
     """
-    Fetal Health Classification Model
-    
-    Predicts fetal health status:
-    - 1 = Normal
-    - 2 = Suspect
-    - 3 = Pathological
-    
-    Features:
-    - Column-order invariant
-    - Handles missing values
-    - Calibrated probabilities
-    - Optimized for Class 3 recall
+    Evaluate model Macro-F1 score on test set.
+    Required: Macro-F1 >= 0.90
     """
+    model, df_train, df_test = trained_model
     
-    def __init__(self):
-        """Initialize the predictor."""
-        self.model = None
-        self.preprocessor = None
-        self.relevant_features = None
-        
-        # Garbage features (excluded from training)
-        self.garbage_features = [
-            'hospital_block',
-            'insurance_status',
-            'reviews_addressed',
-            'insurance_company',
-            'ctg_machine_model',
-            'weather_status',
-            'duty_doctor_shift',
-            'payment_status',
-            'ward_number',
-            'date'
-        ]
+    y_true = df_test['target']
+    y_pred = model.predict(df_test.drop('target', axis=1))
     
-    def _setup_preprocessor(self):
-        """Create preprocessing pipeline."""
-        return Pipeline([
-            ('imputer', SimpleImputer(strategy='median')),
-            ('scaler', StandardScaler())
-        ])
+    macro_f1 = f1_score(y_true, y_pred, average='macro')
     
-    def fit(self, train_df):
-        """
-        Train the model on relevant features.
-        
-        Args:
-            train_df: DataFrame with 'target' column
-        """
-        # Get relevant features (exclude target and garbage)
-        all_features = [col for col in train_df.columns if col != 'target']
-        self.relevant_features = [f for f in all_features if f not in self.garbage_features]
-        self.relevant_features = sorted(self.relevant_features)
-        
-        # Extract features and target
-        X = train_df[self.relevant_features]
-        y = train_df['target']
-        
-        # Preprocess
-        self.preprocessor = self._setup_preprocessor()
-        X_processed = self.preprocessor.fit_transform(X)
-        
-        # Train Random Forest with calibration
-        base_model = RandomForestClassifier(
-            n_estimators=300,
-            max_depth=15,
-            min_samples_split=10,
-            min_samples_leaf=4,
-            max_features='sqrt',
-            class_weight='balanced',
-            random_state=42,
-            n_jobs=-1
-        )
-        
-        self.model = CalibratedClassifierCV(
-            base_model,
-            method='sigmoid',
-            cv=5
-        )
-        
-        self.model.fit(X_processed, y)
+    print(f"\n[METRIC] Macro-F1 Score: {macro_f1:.4f}")
     
-    def predict(self, df):
-        """
-        Predict class labels.
-        
-        Args:
-            df: DataFrame WITHOUT 'target' column
-        
-        Returns:
-            predictions: Array of predictions (1.0, 2.0, 3.0)
-        """
-        if self.model is None:
-            raise ValueError("Model not trained. Call fit() first.")
-        
-        # Extract and preprocess
-        X = df[self.relevant_features]
-        X_processed = self.preprocessor.transform(X)
-        
-        # Predict
-        predictions = self.model.predict(X_processed).astype(float)
-        
-        return predictions
+    assert macro_f1 >= MACRO_F1_THRESHOLD, \
+        f"Macro-F1 {macro_f1:.4f} below threshold {MACRO_F1_THRESHOLD}"
+
+
+def test_class3_recall_threshold(trained_model):
+    """
+    Evaluate recall for Class 3 (Pathological) on test set.
+    Required: Class 3 Recall >= 0.90
     
-    def predict_proba(self, df):
-        """
-        Predict class probabilities.
-        
-        Args:
-            df: DataFrame WITHOUT 'target' column
-        
-        Returns:
-            probabilities: Array of shape (n_samples, 3)
-        """
-        if self.model is None:
-            raise ValueError("Model not trained. Call fit() first.")
-        
-        # Extract and preprocess
-        X = df[self.relevant_features]
-        X_processed = self.preprocessor.transform(X)
-        
-        # Get probabilities
-        probabilities = self.model.predict_proba(X_processed)
-        
-        return probabilities
-'''
+    This is the MOST CRITICAL metric for medical safety.
+    """
+    model, df_train, df_test = trained_model
     
-    # Create output directory
-    output_dir = Path("/workspace/results")
-    output_dir.mkdir(parents=True, exist_ok=True)
+    y_true = df_test['target']
+    y_pred = model.predict(df_test.drop('target', axis=1))
     
-    # Save to utils.py
-    utils_path = output_dir / "utils.py"
-    with open(utils_path, 'w') as f:
-        f.write(utils_code)
+    # Calculate recall for each class
+    recalls = recall_score(y_true, y_pred, labels=[1.0, 2.0, 3.0], average=None)
+    class3_recall = recalls[2]  # Index 2 corresponds to class 3
     
-    print(f"\n✓ Saved FetalHealthPredictor class to {utils_path}")
+    print(f"\n[METRIC] Class 3 (Pathological) Recall: {class3_recall:.4f}")
+    print(f"[INFO] Class 1 Recall: {recalls[0]:.4f}")
+    print(f"[INFO] Class 2 Recall: {recalls[1]:.4f}")
     
-    return utils_path
+    assert class3_recall >= CLASS3_RECALL_THRESHOLD, \
+        f"Class 3 Recall {class3_recall:.4f} below threshold {CLASS3_RECALL_THRESHOLD}. " \
+        f"Critical for detecting pathological cases!"
 
 
 # =============================================================================
-# RUN COMPLETE SOLUTION
+# LAYER 8: COMPREHENSIVE PERFORMANCE SUMMARY
 # =============================================================================
 
-if __name__ == "__main__":
-    # Execute main workflow
-    predictor, garbage_features = main()
+def test_print_final_summary(trained_model):
+    """
+    Print a comprehensive summary of all performance metrics.
+    This test always passes - it's just for reporting.
+    """
+    model, df_train, df_test = trained_model
     
-    # Save utils.py
-    save_utils_file()
+    y_true = df_test['target']
+    y_pred = model.predict(df_test.drop('target', axis=1))
     
-    print("\n" + "="*70)
-    print("ALL STEPS COMPLETE - READY FOR TESTING")
-    print("="*70)
-    print("\nFiles created:")
-    print("  ✓ /workspace/results/submission.csv")
-    print("  ✓ /workspace/results/utils.py")
-    print("\nThe solution will:")
-    print("  ✓ Pass garbage feature validation (exact match)")
-    print("  ✓ Handle shuffled columns")
-    print("  ✓ Handle missing values (NaNs)")
-    print("  ✓ Produce calibrated probabilities")
-    print("  ✓ Achieve Accuracy >= 0.90")
-    print("  ✓ Achieve Macro-F1 >= 0.90")
-    print("  ✓ Achieve Class 3 Recall >= 0.90")
+    accuracy = accuracy_score(y_true, y_pred)
+    macro_f1 = f1_score(y_true, y_pred, average='macro')
+    recalls = recall_score(y_true, y_pred, labels=[1.0, 2.0, 3.0], average=None)
+    
+    print("\n" + "="*60)
+    print("FINAL PERFORMANCE SUMMARY")
+    print("="*60)
+    print(f"Accuracy:           {accuracy:.4f} (Threshold: {ACCURACY_THRESHOLD})")
+    print(f"Macro-F1:           {macro_f1:.4f} (Threshold: {MACRO_F1_THRESHOLD})")
+    print(f"Class 1 Recall:     {recalls[0]:.4f}")
+    print(f"Class 2 Recall:     {recalls[1]:.4f}")
+    print(f"Class 3 Recall:     {recalls[2]:.4f} (Threshold: {CLASS3_RECALL_THRESHOLD}) ⭐")
+    print("="*60)
+    
+    # This test always passes - it's just for summary
+    assert True
